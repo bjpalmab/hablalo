@@ -7,6 +7,23 @@ echo   hablalo - Real-time Speech-to-Text
 echo ============================================================
 echo.
 
+REM Check if whisper.cpp is already installed
+if not exist "main.exe" (
+    echo [INSTALADOR] Ejecutando instalador por primera vez...
+    echo.
+    powershell -ExecutionPolicy Bypass -File "%~dp0installer.ps1"
+    if errorlevel 1 (
+        echo.
+        echo ERROR: La instalacion fallo. Revisa los mensajes arriba.
+        pause
+        exit /b 1
+    )
+    echo.
+) else (
+    echo [INFO] whisper.cpp ya esta instalado.
+    echo.
+)
+
 REM Check if Python is installed
 python --version >nul 2>&1
 if errorlevel 1 (
