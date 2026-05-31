@@ -1,0 +1,33 @@
+{
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "chunk_duration": 3,
+    "device_id": null,
+    "silence_threshold": 0.01,
+    "silence_duration": 1.5
+  },
+  "whisper": {
+    "executable": "./main",
+    "model": "./models/ggml-base.bin",
+    "language": "auto",
+    "threads": 8,
+    "no_timestamps": true
+  },
+  "output": {
+    "log_file": "transcriptions.txt",
+    "save_chunks": false,
+    "output_format": "txt",
+    "show_visualization": true
+  },
+  "performance": {
+    "timeout_seconds": 60,
+    "queue_size": 10,
+    "process_threads": 2
+  },
+  "logging": {
+    "verbose": true,
+    "show_devices": true,
+    "timestamps": true
+  }
+}
