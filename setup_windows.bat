@@ -16,36 +16,62 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Creating Python virtual environment...
+echo [1/4] Creating Python virtual environment...
 python -m venv venv
 call venv\Scripts\activate.bat
 
-echo [2/3] Installing dependencies...
+echo [2/4] Installing dependencies...
 pip install --upgrade pip
 pip install -r requirements.txt
 
-echo [3/3] Downloading whisper.cpp...
+echo [3/4] Downloading whisper.cpp...
 echo.
-echo Visit: https://github.com/ggml-org/whisper.cpp
-echo Instructions:
-echo   1. Clone or download whisper.cpp repository
-echo   2. Follow the build instructions (requires gcc/MSVC)
-echo   3. Place the compiled 'main.exe' in the project root
-echo   4. Download models from: https://huggingface.co/ggerganov/whisper.cpp
-echo   5. Create 'models' folder and place model file (e.g., ggml-base.bin)
+if not exist "whisper.cpp" (
+    echo Cloning whisper.cpp repository...
+    git clone https://github.com/ggml-org/whisper.cpp.git
+) else (
+    echo whisper.cpp already exists, skipping clone
+)
+
+echo [4/4] Compiling whisper.cpp for Windows...
 echo.
-echo For Windows, you can download pre-built binaries or use:
-echo   - Visual Studio Build Tools or
-echo   - mingw-w64 for compilation
+echo IMPORTANT: For Windows, you need one of these options:
+echo   Option A: Visual Studio Build Tools with C++ support
+echo   Option B: MSYS2 with mingw-w64 toolchain
+echo   Option C: Download pre-built binaries from releases
+echo.
+echo If you have Visual Studio:
+echo   cd whisper.cpp
+echo   mkdir build
+echo   cd build
+echo   cmake ..
+echo   cmake --build . --config Release
+echo   copy Release\main.exe ..\..\main.exe
+echo.
+echo Or download pre-built binary from:
+echo https://github.com/ggml-org/whisper.cpp/releases
+echo and place main.exe in the project root
+echo.
+
+echo Next step: Download a whisper model
+echo Visit: https://huggingface.co/ggerganov/whisper.cpp/tree/main
+echo Recommended models:
+echo   - ggml-tiny.bin (75MB) - Fastest, less accurate
+echo   - ggml-base.bin (150MB) - Good balance
+echo   - ggml-small.bin (500MB) - Better accuracy
+echo.
+echo Create 'models' folder and place the .bin file there:
+echo   mkdir models
+echo   move ggml-base.bin models\
 echo.
 
 echo ============================================================
 echo Setup complete!
 echo ============================================================
 echo.
-echo Next steps:
-echo   1. Make sure whisper.cpp is compiled and 'main.exe' is in root
-echo   2. Download a whisper model to 'models' folder
-echo   3. Run: run.bat
+echo Final checklist:
+echo   [ ] whisper.cpp compiled OR main.exe in project root
+echo   [ ] Model file (.bin) in 'models' folder
+echo   [ ] Run: run.bat
 echo.
 pause

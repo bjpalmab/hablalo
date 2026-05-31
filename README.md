@@ -22,19 +22,18 @@ cd hablalo
 setup_windows.bat
 ```
 
-Esto creará un virtual environment e instalará dependencias.
+Esto creará un virtual environment e instalará dependencias. También clonará whisper.cpp automáticamente.
 
 ### Paso 3: Compilar whisper.cpp
 
 **Opción A: Usar Visual Studio (Recomendado)**
 
-1. Clonar whisper.cpp:
+1. Ir al directorio de whisper.cpp:
 ```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
 ```
 
-2. Compilar con MSVC:
+2. Crear build y compilar con MSVC:
 ```bash
 mkdir build
 cd build
@@ -44,35 +43,25 @@ cmake --build . --config Release
 
 3. Copiar `main.exe` a la carpeta del proyecto:
 ```bash
-copy Release\main.exe ..\..\hablalo\
+copy Release\main.exe ..\..\main.exe
 ```
 
-**Opción B: Usar mingw-w64**
+**Opción B: Descargar pre-compilado** (Más fácil)
 
-```bash
-cd whisper.cpp
-make
-# El ejecutable estará en la raíz de whisper.cpp como 'main.exe'
-```
-
-**Opción C: Descargar pre-compilado** (Más fácil)
-
-Ve a [releases de whisper.cpp](https://github.com/ggml-org/whisper.cpp/releases) y descarga el ejecutable compilado.
+Ve a [releases de whisper.cpp](https://github.com/ggml-org/whisper.cpp/releases) y descarga el ejecutable compilado para Windows. Coloca `main.exe` en la raíz del proyecto.
 
 ### Paso 4: Descargar modelo
 
 1. Descarga un modelo desde [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main):
-   - `ggml-base.bin` (~150MB) - Buen balance
+   - `ggml-tiny.bin` (~75MB) - Más rápido, menos preciso
+   - `ggml-base.bin` (~150MB) - Buen balance ⭐ RECOMENDADO
    - `ggml-small.bin` (~500MB) - Mejor precisión
-   - `ggml-tiny.bin` (~75MB) - Rápido pero menos preciso
 
 2. Crea carpeta y coloca el modelo:
 ```bash
 mkdir models
 # Coloca el archivo .bin descargado aquí
 ```
-
-3. Actualiza `MODEL_PATH` en `main.py` si usas diferente modelo
 
 ## 📖 Uso
 
@@ -95,7 +84,15 @@ python main.py
 Sample rate: 16000 Hz
 Chunk duration: 3 seconds
 Whisper model: ./models/ggml-base.bin
+Whisper executable: ./main
 ============================================================
+
+🔊 Available audio devices:
+   → [0] Microphone (Realtek Audio)
+   [1] Stereo Mix (Realtek Audio)
+
+🎙️  Press Ctrl+C to stop recording and exit
+Starting continuous recording...
 
 🎤 Recording audio chunk...
 ✓ Audio chunk recorded (3s)
@@ -112,31 +109,34 @@ Whisper model: ./models/ggml-base.bin
 Edita `main.py` para ajustar:
 
 ```python
-SAMPLE_RATE = 16000          # Frecuencia de muestreo (Hz)
+SAMPLE_RATE = 16000          # Frecuencia de muestreo (Hz) - No cambiar
 CHUNK_DURATION = 3            # Duración de cada captura (segundos)
 WHISPER_EXECUTABLE = "./main" # Ruta del ejecutable whisper.cpp
 MODEL_PATH = "./models/ggml-base.bin"  # Ruta del modelo
+SAVE_AUDIO_CHUNKS = False     # True para guardar archivos .wav
 ```
 
 ## 🎯 Características
 
-- ✅ Captura de audio en tiempo real
-- ✅ Transcripción automática en chunks
+- ✅ Captura de audio en tiempo real desde micrófono
+- ✅ Transcripción automática en chunks de 3 segundos
 - ✅ Detección automática de idioma
 - ✅ Guardado de transcripciones en `transcriptions.txt`
 - ✅ Multi-threading para procesamiento paralelo
 - ✅ Sin dependencias externas complejas
-- ✅ 100% funcional vía código
+- ✅ 100% funcional vía código, sin UI
+- ✅ Limpieza automática de archivos temporales
 
 ## 📝 Archivos Generados
 
 ```
 project/
 ├── transcriptions.txt    # Log de todas las transcripciones
-├── output/               # Archivos de salida temporal de whisper.cpp
 ├── models/               # Carpeta de modelos
 │   └── ggml-base.bin    # Modelo whisper descargado
-└── main/                 # Ejecutable compilado de whisper.cpp
+├── main.exe              # Ejecutable compilado de whisper.cpp
+├── venv/                 # Entorno virtual de Python
+└── whisper.cpp/          # Repositorio de whisper.cpp
 ```
 
 ## 🐛 Troubleshooting
@@ -144,10 +144,12 @@ project/
 ### "Whisper executable not found"
 - Verifica que `main.exe` esté en la raíz del proyecto
 - Asegúrate de haber compilado whisper.cpp correctamente
+- Si usas Windows, asegúrate de que sea `.exe` no solo `main`
 
 ### "Model file not found"
 - Descarga el modelo a `./models/`
 - Verifica que el nombre coincida en `MODEL_PATH`
+- Los modelos deben ser formato `.bin` de whisper.cpp
 
 ### Errores de audio
 - Comprueba que tu micrófono esté conectado y funcional
@@ -155,9 +157,14 @@ project/
 - Ajusta el índice en: `sd.default.device[0] = 1` (donde 1 es el ID del dispositivo)
 
 ### Muy lento
-- Usa `ggml-tiny.bin` para velocidad
+- Usa `ggml-tiny.bin` para velocidad máxima
 - Reduce `CHUNK_DURATION` (ej: 2 segundos)
 - Aumenta el número de threads en el comando whisper.cpp
+
+### Error al compilar whisper.cpp en Windows
+- Instala Visual Studio Build Tools con soporte C++
+- O usa MSYS2 con toolchain mingw-w64
+- O descarga binario pre-compilado de releases
 
 ## 📚 Recursos
 
