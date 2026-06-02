@@ -59,7 +59,15 @@ def install_dependencies(pip_path):
             f.write("numpy>=1.20.0\npyaudio>=0.2.11\nkeyboard>=0.13.5\nflask>=2.0.0\npystray>=0.5.3\nPillow>=9.0.0\n")
     
     print("📥 Instalando dependencias...")
-    subprocess.run([pip_path, "install", "--upgrade", "pip"], check=True, stdout=subprocess.DEVNULL)
+    
+    # Intentar actualizar pip, pero continuar si falla (no es crítico)
+    try:
+        subprocess.run([pip_path, "install", "--upgrade", "pip"], 
+                      check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("✅ pip actualizado.")
+    except subprocess.CalledProcessError:
+        print("⚠️  No se pudo actualizar pip (no es crítico), continuando...")
+    
     subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
     print("✅ Dependencias instaladas.")
 
