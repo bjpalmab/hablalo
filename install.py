@@ -56,7 +56,7 @@ def install_dependencies(pip_path):
     if not Path("requirements.txt").exists():
         print("⚠️  No se encontró requirements.txt, creando uno básico...")
         with open("requirements.txt", "w") as f:
-            f.write("numpy>=1.20.0\npyaudio>=0.2.11\nkeyboard>=0.13.5\nflask>=2.0.0\npystray>=0.5.3\nPillow>=9.0.0\n")
+            f.write("numpy>=1.20.0\nkeyboard>=0.13.5\nflask>=2.0.0\npystray>=0.5.3\nPillow>=9.0.0\npyperclip>=1.8.0\n")
     
     print("📥 Instalando dependencias...")
     
@@ -68,19 +68,22 @@ def install_dependencies(pip_path):
     except subprocess.CalledProcessError:
         print("⚠️  No se pudo actualizar pip (no es crítico), continuando...")
     
-    # En Windows, instalar pipwin primero para manejar PyAudio
+    # En Windows, instalar PyAudio desde wheel precompilado
     if platform.system() == "Windows":
-        print("📦 Instalando pipwin para manejar dependencias nativas de Windows...")
-        subprocess.run([pip_path, "install", "pipwin"], check=True)
+        print("📦 Instalando PyAudio desde wheel precompilado...")
+        # Usar wheel precompilado de Christoph Gohlke mirror o PyPI wheels
+        pyaudio_wheel = "https://github.com/cgohlke/win_amd64-wheels/releases/download/2024.12.19/PyAudio-0.2.14-cp314-cp314-win_amd64.whl"
+        try:
+            subprocess.run([pip_path, "install", pyaudio_wheel], check=True)
+            print("✅ PyAudio instalado.")
+        except subprocess.CalledProcessError:
+            # Fallback: intentar con versiÃ³n genÃ©rica de PyPI que pueda tener wheels
+            print("â ï¸  Intentando instalar PyAudio desde PyPI...")
+            subprocess.run([pip_path, "install", "PyAudio", "--only-binary", ":all:"], check=True)
         
-        # Instalar PyAudio usando pipwin (usa binarios precompilados de Christoph Gohlke)
-        print("📦 Instalando PyAudio desde binarios precompilados...")
-        venv_python = pip_path.replace("Scripts\\pip.exe", "Scripts\\python.exe").replace("Scripts/pip.exe", "Scripts/python.exe")
-        subprocess.run([venv_python, "-m", "pipwin", "install", "pyaudio"], check=True)
-        
-        # Instalar el resto de dependencias (excluyendo pyaudio del requirements.txt)
+        # Instalar el resto de dependencias
         print("📦 Instalando resto de dependencias...")
-        subprocess.run([pip_path, "install", "-r", "requirements.txt", "--no-deps"], check=True)
+        subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
     else:
         subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
     
