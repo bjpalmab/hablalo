@@ -1,3 +1,7 @@
-sounddevice==0.4.6
-numpy==1.24.3
-keyboard==0.13.5
+numpy>=1.20.0
+pyaudio>=0.2.11
+keyboard>=0.13.5
+flask>=2.0.0
+pystray>=0.5.3
+Pillow>=9.0.0
+pyperclip>=1.8.0

@@ -1,448 +1,471 @@
-#!/usr/bin/env python3
 """
-Real-time speech-to-text application using whisper.cpp
-Captures audio from microphone and transcribes it in real time
-
-Features:
-- Interactive TUI with audio level visualization
-- Silence detection to avoid transcribing empty chunks
-- Hotkey controls (S=Start/Stop, Q=Quit)
-- Configuration via config.json
-- Auto-download models if missing
+Whisper Transcriber con Interfaz Web, Comandos de Voz y Bandeja del Sistema.
+Mejorado con detección automática de micrófono y minimizado a tray.
 """
-
-import subprocess
-import sounddevice as sd
-import numpy as np
-import wave
 import os
 import sys
 import json
-import threading
-from queue import Queue
-from datetime import datetime
-import keyboard
 import time
-import argparse
+import threading
+import wave
+import numpy as np
+import pyaudio
+import subprocess
+import signal
+from pathlib import Path
+from flask import Flask, render_template_string, jsonify
+from http.server import HTTPServer
+import keyboard
+import pystray
+from pystray import Icon, MenuItem, Menu
+from PIL import Image
 
-# Default configuration
+# Cargar configuración
+CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
-    "audio": {
-        "sample_rate": 16000,
-        "channels": 1,
-        "chunk_duration": 3,
-        "device_id": None,
-        "silence_threshold": 0.01,
-        "silence_duration": 1.5
-    },
-    "whisper": {
-        "executable": "./main",
-        "model": "./models/ggml-base.bin",
-        "language": "auto",
-        "threads": 8,
-        "no_timestamps": True
-    },
-    "output": {
-        "log_file": "transcriptions.txt",
-        "save_chunks": False,
-        "output_format": "txt",
-        "show_visualization": True
-    },
-    "performance": {
-        "timeout_seconds": 60,
-        "queue_size": 10,
-        "process_threads": 2
-    },
-    "logging": {
-        "verbose": True,
-        "show_devices": True,
-        "timestamps": True
-    }
+    "audio": {"device_index": -1, "chunk_duration": 3, "silence_threshold": 0.01, "sample_rate": 16000},
+    "whisper": {"model": "models/ggml-base.bin", "language": "es", "threads": 4, "use_gpu": False},
+    "output": {"show_ui": True, "port": 8080, "save_to_file": True, "filename": "transcriptions.txt"},
+    "features": {"auto_copy": True, "voice_commands": True, "minimize_to_tray": True}
 }
 
+def load_config():
+    if Path(CONFIG_FILE).exists():
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    # Crear config por defecto si no existe
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(DEFAULT_CONFIG, f, indent=4)
+    return DEFAULT_CONFIG
 
-class AudioRecorder:
-    """Handles audio recording with silence detection and visualization"""
-    
-    def __init__(self, config):
-        self.config = config
+config = load_config()
+
+# Variables globales
+running = True
+paused = False
+transcription_buffer = []
+full_transcription = ""
+audio_data = []
+icon_ref = None
+
+# HTML para la interfaz web
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Transcriber</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; 
+               background: #f5f5f5; color: #333; transition: all 0.3s; }
+        .dark-mode { background: #1a1a1a; color: #e0e0e0; }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { text-align: center; color: #2196F3; }
+        .status { text-align: center; padding: 10px; margin: 10px 0; border-radius: 5px; 
+                  background: #e3f2fd; color: #1976D2; font-weight: bold; }
+        .dark-mode .status { background: #333; color: #64B5F6; }
+        .controls { text-align: center; margin: 20px 0; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; 
+                 border: none; border-radius: 5px; background: #2196F3; color: white; }
+        button:hover { background: #1976D2; }
+        button.danger { background: #f44336; }
+        button.danger:hover { background: #d32f2f; }
+        .transcription { background: white; padding: 20px; border-radius: 8px; 
+                         box-shadow: 0 2px 5px rgba(0,0,0,0.1); min-height: 300px; 
+                         white-space: pre-wrap; line-height: 1.6; }
+        .dark-mode .transcription { background: #2d2d2d; box-shadow: 0 2px 5px rgba(255,255,255,0.1); }
+        .audio-level { height: 20px; background: #e0e0e0; border-radius: 10px; 
+                       overflow: hidden; margin: 10px 0; }
+        .level-bar { height: 100%; background: linear-gradient(90deg, #4CAF50, #8BC34A); 
+                     width: 0%; transition: width 0.1s; }
+        .commands { margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 5px; }
+        .dark-mode .commands { background: #444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Whisper Transcriber</h1>
+        <div class="status" id="status">Estado: Grabando...</div>
+        <div class="audio-level"><div class="level-bar" id="levelBar"></div></div>
+        <div class="controls">
+            <button onclick="togglePause()">⏸️ Pausar/Reanudar</button>
+            <button onclick="copyText()">📋 Copiar Todo</button>
+            <button onclick="clearText()" class="danger">🗑️ Borrar</button>
+            <button onclick="toggleTheme()">🌓 Tema</button>
+        </div>
+        <div class="transcription" id="transcription">Esperando audio...</div>
+        <div class="commands">
+            <strong>🎤 Comandos de Voz:</strong><br>
+            "Copiar todo", "Borrar texto", "Nuevo párrafo", "Pausar grabación", "Reanudar grabación"
+        </div>
+    </div>
+    <script>
+        let isPaused = false;
+        function updateTranscription() {
+            fetch('/api/transcription').then(r => r.json()).then(data => {
+                document.getElementById('transcription').innerText = data.text || 'Esperando audio...';
+                document.getElementById('levelBar').style.width = (data.level || 0) + '%';
+            });
+        }
+        setInterval(updateTranscription, 500);
+        function togglePause() {
+            fetch('/api/pause', {method: 'POST'}).then(() => location.reload());
+        }
+        function copyText() {
+            fetch('/api/copy', {method: 'POST'}).then(() => alert('¡Texto copiado!'));
+        }
+        function clearText() {
+            fetch('/api/clear', {method: 'POST'}).then(() => location.reload());
+        }
+        function toggleTheme() {
+            document.body.classList.toggle('dark-mode');
+        }
+    </script>
+</body>
+</html>
+"""
+
+class AudioProcessor:
+    def __init__(self):
+        self.p = pyaudio.PyAudio()
+        self.device_index = config["audio"]["device_index"]
         self.sample_rate = config["audio"]["sample_rate"]
-        self.channels = config["audio"]["channels"]
         self.chunk_duration = config["audio"]["chunk_duration"]
-        self.device_id = config["audio"].get("device_id")
-        self.silence_threshold = config["audio"].get("silence_threshold", 0.01)
-        self.silence_duration = config["audio"].get("silence_duration", 1.5)
-        self.show_visualization = config["output"].get("show_visualization", True)
-        
-        self.is_recording = False
-        self.is_paused = False
-        self.audio_queue = Queue()
-        self.current_level = 0
-        
-    def detect_silence(self, audio_data):
-        """Check if audio chunk is mostly silence"""
-        rms = np.sqrt(np.mean(audio_data ** 2))
-        return rms < self.silence_threshold
+        self.silence_threshold = config["audio"]["silence_threshold"]
+        self.detect_device()
     
-    def calculate_audio_level(self, audio_data):
-        """Calculate audio level for visualization (0-100)"""
-        rms = np.sqrt(np.mean(audio_data ** 2))
-        # Normalize to 0-100 scale (typical max is around 0.5)
-        level = min(int((rms / 0.5) * 100), 100)
+    def detect_device(self):
+        """Detecta automáticamente el micrófono por defecto o permite selección"""
+        if self.device_index == -1:
+            # Usar dispositivo por defecto
+            self.device_index = self.p.get_default_input_device_info()['index']
+            print(f"✅ Micrófono automático seleccionado: {self.p.get_device_info_by_index(self.device_index)['name']}")
+        else:
+            try:
+                info = self.p.get_device_info_by_index(self.device_index)
+                print(f"✅ Micrófono configurado: {info['name']}")
+            except Exception as e:
+                print(f"⚠️  Dispositivo {self.device_index} no encontrado, usando default.")
+                self.device_index = self.p.get_default_input_device_info()['index']
+    
+    def list_devices(self):
+        """Lista todos los dispositivos de entrada disponibles"""
+        print("\n🎤 Dispositivos de audio disponibles:")
+        for i in range(self.p.get_device_count()):
+            info = self.p.get_device_info_by_index(i)
+            if info['maxInputChannels'] > 0:
+                default = " (DEFAULT)" if i == self.p.get_default_input_device_info()['index'] else ""
+                print(f"  [{i}] {info['name']}{default}")
+    
+    def record_chunk(self):
+        """Graba un fragmento de audio"""
+        chunk_size = int(self.sample_rate * self.chunk_duration)
+        stream = self.p.open(format=pyaudio.paInt16, channels=1, rate=self.sample_rate,
+                            input=True, input_device_index=self.device_index, frames_per_buffer=chunk_size)
+        
+        frames = []
+        for _ in range(int(self.sample_rate / 1024 * self.chunk_duration)):
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(data)
+        
+        stream.stop_stream()
+        stream.close()
+        
+        audio_data = b''.join(frames)
+        return np.frombuffer(audio_data, dtype=np.int16)
+    
+    def detect_silence(self, audio_chunk):
+        """Detecta si el chunk es silencio"""
+        rms = np.sqrt(np.mean(audio_chunk.astype(float)**2))
+        return rms < self.silence_threshold * 32768
+    
+    def get_audio_level(self, audio_chunk):
+        """Obtiene nivel de audio para visualización (0-100%)"""
+        rms = np.sqrt(np.mean(audio_chunk.astype(float)**2))
+        level = min(100, int((rms / (32768 * 0.5)) * 100))
         return level
+
+class WhisperTranscriber:
+    def __init__(self, audio_processor):
+        self.audio_processor = audio_processor
+        self.model = config["whisper"]["model"]
+        self.language = config["whisper"]["language"]
+        self.threads = config["whisper"]["threads"]
+        self.use_gpu = config["whisper"]["use_gpu"]
     
-    def visualize_audio(self, level, transcription_line=""):
-        """Display audio level bar and current transcription"""
-        if not self.show_visualization:
-            return
-            
-        bar_length = 40
-        filled = int((level / 100) * bar_length)
-        bar = "█" * filled + "░" * (bar_length - filled)
+    def transcribe(self, audio_chunk):
+        """Transcribe un chunk de audio usando whisper.cpp"""
+        if not Path("main.exe").exists():
+            print("❌ Error: main.exe no encontrado.")
+            return ""
         
-        # Move cursor up and clear line
-        print(f"\r🎤 [{bar}] {level:3d}% {transcription_line}", end="", flush=True)
+        # Guardar chunk temporalmente
+        temp_wav = "temp_chunk.wav"
+        with wave.open(temp_wav, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.audio_processor.sample_rate)
+            wf.writeframes(audio_chunk.tobytes())
         
-    def record_audio_chunk(self):
-        """Record audio chunk from microphone"""
-        try:
-            samples = int(self.sample_rate * self.chunk_duration)
-            audio_data = sd.rec(
-                samples,
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype=np.float32,
-                device=self.device_id
-            )
-            
-            # Record while showing visualization
-            start_time = time.time()
-            while time.time() - start_time < self.chunk_duration:
-                if not self.is_recording:
-                    sd.stop()
-                    return None
-                    
-                elapsed = time.time() - start_time
-                # Calculate current level from recorded data so far
-                current_idx = min(int(elapsed * self.sample_rate), len(audio_data)-1)
-                if current_idx > 100:
-                    recent_audio = audio_data[max(0, current_idx-1600):current_idx]
-                    level = self.calculate_audio_level(recent_audio)
-                    self.current_level = level
-                    self.visualize_audio(level)
-                time.sleep(0.1)
-            
-            sd.wait()
-            
-            # Check for silence
-            if self.detect_silence(audio_data):
-                return None  # Skip silent chunks
-                
-            return audio_data
-            
-        except Exception as e:
-            print(f"\n❌ Error recording audio: {e}")
-            return None
-
-
-class Transcriber:
-    """Handles transcription using whisper.cpp"""
-    
-    def __init__(self, config):
-        self.config = config
-        self.executable = config["whisper"]["executable"]
-        self.model_path = config["whisper"]["model"]
-        self.language = config["whisper"].get("language", "auto")
-        self.threads = config["whisper"].get("threads", 8)
-        self.no_timestamps = config["whisper"].get("no_timestamps", True)
-        self.timeout = config["performance"].get("timeout_seconds", 60)
-        self.save_chunks = config["output"].get("save_chunks", False)
-        self.log_file = config["output"].get("log_file", "transcriptions.txt")
+        # Construir comando
+        cmd = ["main.exe", "-m", self.model, "-f", temp_wav, "-l", self.language, 
+               "-t", str(self.threads), "--no-timestamps"]
         
-    def save_audio_chunk(self, audio_data, filename):
-        """Save audio chunk to WAV file"""
+        if self.use_gpu:
+            cmd.insert(1, "-ngl")  # GPU layers (ajustar según necesidad)
+            cmd.insert(2, "99")
+        
         try:
-            with wave.open(filename, "wb") as wav_file:
-                wav_file.setnchannels(self.config["audio"]["channels"])
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(self.sample_rate)
-                audio_int16 = np.clip(audio_data * 32767, -32768, 32767).astype(np.int16)
-                wav_file.writeframes(audio_int16.tobytes())
-            return True
-        except Exception as e:
-            print(f"\n❌ Error saving audio: {e}")
-            return False
-    
-    def transcribe_audio(self, audio_file):
-        """Transcribe audio file using whisper.cpp"""
-        try:
-            if not os.path.exists(self.executable):
-                print(f"\n❌ Whisper executable not found at {self.executable}")
-                return None
-
-            if not os.path.exists(self.model_path):
-                print(f"\n❌ Model file not found at {self.model_path}")
-                return None
-
-            cmd = [
-                self.executable,
-                "-m", self.model_path,
-                "-f", audio_file,
-                "--language", self.language,
-                "--threads", str(self.threads),
-            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            transcription = result.stdout.strip()
             
-            if self.no_timestamps:
-                cmd.append("--no-timestamps")
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
-
-            if result.returncode == 0:
-                transcription = result.stdout.strip()
-                return transcription if transcription else None
-            else:
-                print(f"\n❌ Transcription error: {result.stderr}")
-                return None
-
+            # Limpieza básica
+            if transcription and not any(x in transcription.lower() for x in ['[blanks]', '[silence]']):
+                return transcription
+            
         except subprocess.TimeoutExpired:
-            print("\n❌ Transcription timeout")
-            return None
+            print("⏱️  Timeout en transcripción.")
         except Exception as e:
-            print(f"\n❌ Error transcribing: {e}")
-            return None
+            print(f"❌ Error en transcripción: {e}")
+        finally:
+            if Path(temp_wav).exists():
+                os.remove(temp_wav)
+        
+        return ""
 
-
-class RealTimeApp:
-    """Main application class with TUI and hotkey support"""
+class TrayApp:
+    def __init__(self, transcriber_app):
+        self.transcriber_app = transcriber_app
+        self.icon = None
     
-    def __init__(self, config):
-        self.config = config
-        self.recorder = AudioRecorder(config)
-        self.transcriber = Transcriber(config)
-        self.is_running = False
-        self.chunk_counter = 0
-        self.last_transcription = ""
-        
-    def list_audio_devices(self):
-        """List available audio devices"""
-        print("\n🔊 Available audio devices:")
-        devices = sd.query_devices()
-        default_input = sd.default.device[0]
-        
-        for i, device in enumerate(devices):
-            if device['max_input_channels'] > 0:  # Only show input devices
-                marker = "→" if i == default_input else " "
-                status = "✓" if device['hostapi'] == 0 else " "
-                print(f"  {marker} [{i}] {device['name']} {status}")
-        
-        return devices
+    def create_icon(self):
+        """Crea icono simple para la bandeja"""
+        # Crear imagen simple de 64x64 con Pillow
+        img = Image.new('RGB', (64, 64), color='#2196F3')
+        pixels = img.load()
+        # Dibujar un micrófono simple
+        for i in range(20, 44):
+            for j in range(15, 35):
+                if 27 < i < 37 and j > 25:  # Base
+                    pixels[i, j] = (255, 255, 255)
+                elif not (30 < i < 34 and j < 25):  # Cuerpo
+                    pixels[i, j] = (255, 255, 255)
+        return img
     
-    def select_device(self, devices):
-        """Let user select audio device"""
+    def on_open(self, icon, item):
+        """Abrir interfaz web"""
+        import webbrowser
+        webbrowser.open(f"http://localhost:{config['output']['port']}")
+    
+    def on_pause(self, icon, item):
+        """Pausar/Reanudar"""
+        global paused
+        paused = not paused
+        status = "Reanudado" if not paused else "Pausado"
+        print(f"🎙️ Grabación {status.lower()}")
+    
+    def on_copy(self, icon, item):
+        """Copiar texto al portapapeles"""
+        global full_transcription
         try:
-            choice = input("\nSelect device number (or press Enter for default): ").strip()
-            if choice and choice.isdigit():
-                device_id = int(choice)
-                if 0 <= device_id < len(devices):
-                    self.config["audio"]["device_id"] = device_id
-                    self.recorder.device_id = device_id
-                    print(f"✓ Selected device: {devices[device_id]['name']}")
-                    return True
-                else:
-                    print("❌ Invalid device number")
-                    return False
-            return True  # Use default
-        except Exception as e:
-            print(f"Error selecting device: {e}")
-            return False
+            import pyperclip
+            pyperclip.copy(full_transcription)
+            print("📋 Texto copiado al portapapeles")
+        except:
+            print("⚠️  No se pudo copiar (instala: pip install pyperclip)")
     
-    def process_audio(self):
-        """Process audio chunks in background thread"""
-        while self.is_running:
-            try:
-                if self.recorder.is_paused:
-                    time.sleep(0.1)
-                    continue
-                    
-                audio_data = self.recorder.record_audio_chunk()
-                
-                if audio_data is not None:
-                    self.chunk_counter += 1
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    audio_file = f"audio_{timestamp}_chunk_{self.chunk_counter}.wav"
-                    
-                    if self.transcriber.save_audio_chunk(audio_data, audio_file):
-                        transcription = self.transcriber.transcribe_audio(audio_file)
-                        
-                        if transcription:
-                            self.last_transcription = transcription
-                            print(f"\n✨ [{timestamp}] #{self.chunk_counter}: {transcription}\n")
-                            
-                            # Save to log file
-                            with open(self.transcriber.log_file, "a", encoding="utf-8") as log:
-                                log.write(f"[{timestamp}] #{self.chunk_counter}: {transcription}\n")
-                        
-                        # Clean up
-                        if not self.transcriber.save_chunks:
-                            try:
-                                os.remove(audio_file)
-                            except:
-                                pass
-                                
-            except Exception as e:
-                print(f"\nError processing audio: {e}")
-                time.sleep(1)
-    
-    def handle_hotkeys(self):
-        """Handle keyboard shortcuts"""
-        print("\n🎹 Hotkeys: [S] Start/Pause  [Q] Quit  [D] Change Device")
-        
-        while self.is_running:
-            try:
-                if keyboard.is_pressed('q'):
-                    print("\n\n⏹️  Quitting...")
-                    self.is_running = False
-                    break
-                elif keyboard.is_pressed('s'):
-                    self.recorder.is_paused = not self.recorder.is_paused
-                    status = "⏸️  PAUSED" if self.recorder.is_paused else "▶️  RECORDING"
-                    print(f"\n{status}\n")
-                    time.sleep(0.3)  # Debounce
-                elif keyboard.is_pressed('d'):
-                    self.recorder.is_paused = True
-                    self.list_audio_devices()
-                    self.select_device(sd.query_devices())
-                    self.recorder.is_paused = False
-                    print("▶️  Recording resumed\n")
-                    time.sleep(0.3)  # Debounce
-                time.sleep(0.1)
-            except Exception as e:
-                pass
-    
-    def check_prerequisites(self):
-        """Check if all prerequisites are met"""
-        errors = []
-        
-        # Check executable
-        exe = self.config["whisper"]["executable"]
-        if not os.path.exists(exe):
-            errors.append(f"Whisper executable not found at '{exe}'")
-        
-        # Check model
-        model = self.config["whisper"]["model"]
-        if not os.path.exists(model):
-            errors.append(f"Model file not found at '{model}'")
-            errors.append("Download a model with: python download_models.py")
-        
-        if errors:
-            print("\n❌ ERRORS FOUND:")
-            for error in errors:
-                print(f"   • {error}")
-            print("\nRun 'python launcher.py' for automatic setup.\n")
-            return False
-        
-        return True
+    def on_exit(self, icon, item):
+        """Salir de la aplicación"""
+        global running
+        running = False
+        icon.stop()
     
     def run(self):
-        """Main application loop"""
-        print("=" * 60)
-        print("🎙️  Real-time Speech-to-Text with whisper.cpp")
-        print("=" * 60)
-        print(f"Sample rate: {self.config['audio']['sample_rate']} Hz")
-        print(f"Chunk duration: {self.config['audio']['chunk_duration']}s")
-        print(f"Silence threshold: {self.config['audio'].get('silence_threshold', 0.01)}")
-        print(f"Model: {self.config['whisper']['model']}")
-        print("=" * 60)
+        """Ejecutar icono en bandeja"""
+        menu = Menu(
+            MenuItem('🌐 Abrir Interfaz', self.on_open),
+            MenuItem('⏸️ Pausar/Reanudar', self.on_pause),
+            MenuItem('📋 Copiar Texto', self.on_copy),
+            MenuItem(),
+            MenuItem('❌ Salir', self.on_exit)
+        )
         
-        # Check prerequisites
-        if not self.check_prerequisites():
-            return False
+        self.icon = Icon("WhisperTranscriber", self.create_icon(), "Whisper Transcriber", menu)
+        self.icon.run(detach=False)
+
+class WebInterface:
+    def __init__(self, transcriber_app):
+        self.app = Flask(__name__)
+        self.transcriber_app = transcriber_app
+        self.setup_routes()
+    
+    def setup_routes(self):
+        @self.app.route('/')
+        def index():
+            return render_template_string(HTML_TEMPLATE)
         
-        # Show devices
-        if self.config["logging"].get("show_devices", True):
-            devices = self.list_audio_devices()
+        @self.app.route('/api/transcription')
+        def get_transcription():
+            global full_transcription, audio_data
+            level = 0
+            if audio_data:
+                level = self.transcriber_app.audio_processor.get_audio_level(audio_data[-1])
+            return jsonify({'text': full_transcription, 'level': level})
         
-        # Start processing thread
-        processor_thread = threading.Thread(target=self.process_audio, daemon=True)
-        processor_thread.start()
+        @self.app.route('/api/pause', methods=['POST'])
+        def pause():
+            global paused
+            paused = not paused
+            return jsonify({'status': 'ok'})
         
-        # Start hotkey handler
-        hotkey_thread = threading.Thread(target=self.handle_hotkeys, daemon=True)
-        hotkey_thread.start()
+        @self.app.route('/api/copy', methods=['POST'])
+        def copy():
+            global full_transcription
+            try:
+                import pyperclip
+                pyperclip.copy(full_transcription)
+                return jsonify({'status': 'copied'})
+            except:
+                return jsonify({'status': 'error'})
         
-        self.is_running = True
-        self.recorder.is_recording = True
-        
+        @self.app.route('/api/clear', methods=['POST'])
+        def clear():
+            global full_transcription, transcription_buffer
+            full_transcription = ""
+            transcription_buffer = []
+            return jsonify({'status': 'cleared'})
+    
+    def run(self):
+        port = config["output"]["port"]
+        print(f"🌐 Interfaz web disponible en http://localhost:{port}")
+        self.app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
+
+def check_voice_commands(text):
+    """Procesa comandos de voz simples"""
+    if not config["features"]["voice_commands"]:
+        return False
+    
+    text_lower = text.lower()
+    global paused, full_transcription
+    
+    if "copiar todo" in text_lower or "copy all" in text_lower:
         try:
-            print("\n🎙️  Press 'Q' to quit, 'S' to pause/resume\n")
-            print("Starting continuous recording...\n")
-            
-            # Keep main thread alive
-            while self.is_running:
-                time.sleep(0.1)
-                
-        except KeyboardInterrupt:
-            print("\n\n⏹️  Stopping...")
-        finally:
-            self.is_running = False
-            self.recorder.is_recording = False
-            processor_thread.join(timeout=2)
-            print("\n✓ Application stopped")
-            print(f"📝 Transcriptions saved to '{self.config['output']['log_file']}'")
-        
+            import pyperclip
+            pyperclip.copy(full_transcription)
+            print("📋 Texto copiado por comando de voz")
+        except:
+            print("⚠️  Instala pyperclip para copiar: pip install pyperclip")
         return True
-
-
-def load_config(config_file="config.json"):
-    """Load configuration from JSON file"""
-    config = DEFAULT_CONFIG.copy()
     
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                file_config = json.load(f)
-                # Merge configurations
-                for key in file_config:
-                    if key in config:
-                        if isinstance(config[key], dict):
-                            config[key].update(file_config[key])
-                        else:
-                            config[key] = file_config[key]
-            print(f"✓ Loaded configuration from {config_file}")
-        except Exception as e:
-            print(f"⚠️  Error loading config: {e}, using defaults")
-    else:
-        print("ℹ️  No config.json found, using defaults")
+    if "borrar" in text_lower or "clear" in text_lower:
+        full_transcription = ""
+        print("🗑️ Texto borrado por comando de voz")
+        return True
     
-    return config
-
+    if "pausar" in text_lower or "pause" in text_lower:
+        paused = True
+        print("⏸️ Grabación pausada por comando de voz")
+        return True
+    
+    if "reanudar" in text_lower or "resume" in text_lower:
+        paused = False
+        print("▶️ Grabación reanudada por comando de voz")
+        return True
+    
+    if "nuevo párrafo" in text_lower or "new paragraph" in text_lower:
+        full_transcription += "\n\n"
+        print("📝 Nuevo párrafo insertado")
+        return True
+    
+    return False
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Real-time speech-to-text with whisper.cpp")
-    parser.add_argument("--config", default="config.json", help="Configuration file")
-    parser.add_argument("--device", type=int, help="Audio device ID")
-    parser.add_argument("--language", choices=["auto", "es", "en", "fr", "de", "it"], help="Language code")
-    parser.add_argument("--model", help="Path to whisper model")
-    args = parser.parse_args()
+    global running, paused, full_transcription, audio_data, icon_ref
     
-    # Load configuration
-    config = load_config(args.config)
+    print_header("🎙️ Whisper Transcriber Iniciando...")
     
-    # Override with command line arguments
-    if args.device is not None:
-        config["audio"]["device_id"] = args.device
-    if args.language:
-        config["whisper"]["language"] = args.language
-    if args.model:
-        config["whisper"]["model"] = args.model
+    # Inicializar componentes
+    audio_proc = AudioProcessor()
+    # audio_proc.list_devices()  # Descomentar para ver dispositivos
     
-    # Create and run app
-    app = RealTimeApp(config)
-    success = app.run()
+    transcriber = WhisperTranscriber(audio_proc)
     
-    sys.exit(0 if success else 1)
+    # Iniciar interfaz web en hilo separado
+    web_if = WebInterface(transcriber)
+    web_thread = threading.Thread(target=web_if.run, daemon=True)
+    web_thread.start()
+    
+    # Configurar bandeja del sistema si está habilitado
+    if config["features"]["minimize_to_tray"]:
+        tray = TrayApp(transcriber)
+        tray_thread = threading.Thread(target=tray.run, daemon=True)
+        tray_thread.start()
+        icon_ref = tray
+        print("💡 La app se ha minimizado a la bandeja del sistema.")
+        print("   Busca el icono 🎙️ cerca del reloj.")
+    else:
+        print("🌐 Interfaz web abierta. Presiona Ctrl+C para salir.")
+    
+    # Bucle principal de grabación
+    print("🎙️ Grabando... (Habla claramente)")
+    print("💬 Comandos disponibles: 'copiar todo', 'borrar', 'pausar', 'reanudar'")
+    
+    try:
+        while running:
+            if paused:
+                time.sleep(0.5)
+                continue
+            
+            # Grabar chunk
+            audio_chunk = audio_proc.record_chunk()
+            audio_data = [audio_chunk]  # Para visualización web
+            
+            # Detectar silencio
+            if audio_proc.detect_silence(audio_chunk):
+                continue
+            
+            # Transcribir
+            result = transcriber.transcribe(audio_chunk)
+            
+            if result:
+                # Verificar comandos de voz
+                if not check_voice_commands(result):
+                    # Agregar a buffer y texto completo
+                    transcription_buffer.append(result)
+                    full_transcription += result + " "
+                    
+                    # Auto-copiar si está habilitado
+                    if config["features"]["auto_copy"]:
+                        try:
+                            import pyperclip
+                            pyperclip.copy(full_transcription)
+                        except:
+                            pass
+                    
+                    # Guardar en archivo
+                    if config["output"]["save_to_file"]:
+                        with open(config["output"]["filename"], 'a', encoding='utf-8') as f:
+                            f.write(result + " ")
+                    
+                    print(f"🗣️  {result}")
+            
+            time.sleep(0.2)
+    
+    except KeyboardInterrupt:
+        print("\n👋 Deteniendo...")
+        running = False
+    
+    # Guardar transcripción final
+    if full_transcription and config["output"]["save_to_file"]:
+        with open(config["output"]["filename"], 'w', encoding='utf-8') as f:
+            f.write(full_transcription)
+        print(f"💾 Transcripción guardada en {config['output']['filename']}")
 
+def print_header(text):
+    print("\n" + "="*60)
+    print(f"  {text}")
+    print("="*60)
 
 if __name__ == "__main__":
     main()
