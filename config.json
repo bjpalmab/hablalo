@@ -3,7 +3,8 @@
         "device_index": -1,
         "chunk_duration": 3,
         "silence_threshold": 0.01,
-        "sample_rate": 16000
+        "sample_rate": 16000,
+        "channels": 1
     },
     "whisper": {
         "model": "models/ggml-base.bin",
@@ -15,11 +16,18 @@
         "show_ui": true,
         "port": 8080,
         "save_to_file": true,
-        "filename": "transcriptions.txt"
+        "filename": "transcriptions.txt",
+        "export_formats": ["txt", "json", "csv"]
     },
     "features": {
         "auto_copy": true,
         "voice_commands": true,
-        "minimize_to_tray": true
+        "minimize_to_tray": true,
+        "auto_punctuation": true
+    },
+    "performance": {
+        "queue_size": 10,
+        "processing_threads": 2,
+        "timeout_seconds": 60
     }
 }
