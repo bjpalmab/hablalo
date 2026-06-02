@@ -68,7 +68,22 @@ def install_dependencies(pip_path):
     except subprocess.CalledProcessError:
         print("⚠️  No se pudo actualizar pip (no es crítico), continuando...")
     
-    subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
+    # En Windows, instalar pipwin primero para manejar PyAudio
+    if platform.system() == "Windows":
+        print("📦 Instalando pipwin para manejar dependencias nativas de Windows...")
+        subprocess.run([pip_path, "install", "pipwin"], check=True)
+        
+        # Instalar PyAudio usando pipwin (usa binarios precompilados de Christoph Gohlke)
+        print("📦 Instalando PyAudio desde binarios precompilados...")
+        venv_python = pip_path.replace("Scripts\\pip.exe", "Scripts\\python.exe").replace("Scripts/pip.exe", "Scripts/python.exe")
+        subprocess.run([venv_python, "-m", "pipwin", "install", "pyaudio"], check=True)
+        
+        # Instalar el resto de dependencias (excluyendo pyaudio del requirements.txt)
+        print("📦 Instalando resto de dependencias...")
+        subprocess.run([pip_path, "install", "-r", "requirements.txt", "--no-deps"], check=True)
+    else:
+        subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
+    
     print("✅ Dependencias instaladas.")
 
 def download_whisper_binary():
